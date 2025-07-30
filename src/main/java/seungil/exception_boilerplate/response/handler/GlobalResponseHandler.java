@@ -2,28 +2,25 @@ package seungil.exception_boilerplate.response.handler;
 
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.core.MethodParameter;
-import org.springframework.http.MediaType;
-import org.springframework.http.ResponseEntity;
-import org.springframework.http.HttpStatus;
+import org.springframework.http.*;
 import org.springframework.http.converter.HttpMessageConverter;
+import org.springframework.http.server.ServerHttpRequest;
+import org.springframework.http.server.ServerHttpResponse;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.servlet.mvc.method.annotation.ResponseBodyAdvice;
+import seungil.exception_boilerplate.response.CustomException;
 import seungil.exception_boilerplate.response.dto.ApiResponse;
 import seungil.exception_boilerplate.response.dto.ErrorCode;
 import seungil.exception_boilerplate.response.dto.SuccessCode;
-import seungil.exception_boilerplate.response.CustomException;
 
 @Slf4j
 @RestControllerAdvice
 public class GlobalResponseHandler implements ResponseBodyAdvice<Object> {
 
-    /**
-     * 성공 응답: 컨트롤러가 반환하는 모든 데이터를 ApiResponse.success()로 감쌈
-     */
     @Override
     public boolean supports(MethodParameter returnType, Class<? extends HttpMessageConverter<?>> converterType) {
-        // ResponseEntity는 제외 (커스터마이징된 응답을 그대로 유지)
+        // ResponseEntity로 직접 Response를 구성한 경우는 제외
         return !returnType.getParameterType().equals(ResponseEntity.class);
     }
 
@@ -32,22 +29,33 @@ public class GlobalResponseHandler implements ResponseBodyAdvice<Object> {
                                   MethodParameter returnType,
                                   MediaType selectedContentType,
                                   Class<? extends HttpMessageConverter<?>> selectedConverterType,
-                                  org.springframework.http.server.ServerHttpRequest request,
-                                  org.springframework.http.server.ServerHttpResponse response) {
+                                  ServerHttpRequest request,
+                                  ServerHttpResponse response) {
 
-        // 이미 ApiResponse로 포장된 경우 그대로 반환
+        // 이미 ApiResponse로 감싼 응답은 그대로 리턴
         if (body instanceof ApiResponse) {
             return body;
         }
 
-        // null 리턴 시 기본 성공 메시지
-        if (body == null) {
-            response.setStatusCode(HttpStatus.OK);
-            return ApiResponse.success(SuccessCode.SUCCESS_200_001, null);
+        // HTTP 메서드에 따른 상태코드 결정
+        String method = request.getMethod().name();
+        HttpStatus status;
+        switch (method) {
+            case "POST" -> status = HttpStatus.CREATED;     // 201
+            case "DELETE" -> status = HttpStatus.NO_CONTENT; // 204
+            case "PUT", "PATCH", "GET" -> status = HttpStatus.OK; // 200
+            default -> status = HttpStatus.OK;
         }
 
-        // 데이터가 있는 경우
-        response.setStatusCode(HttpStatus.OK);
+        // 상태 코드 설정
+        response.setStatusCode(status);
+
+        // 204 NO_CONTENT는 body가 없어야 하므로 null 반환
+        if (status == HttpStatus.NO_CONTENT) {
+            return null;
+        }
+
+        // ApiResponse.success()로 감싸기
         return ApiResponse.success(SuccessCode.SUCCESS_200_001, body);
     }
 
@@ -57,12 +65,11 @@ public class GlobalResponseHandler implements ResponseBodyAdvice<Object> {
     @ExceptionHandler(CustomException.class)
     public ResponseEntity<ApiResponse<Object>> handleCustomException(CustomException ex) {
         ErrorCode errorCode = ex.getErrorCode();
-
-        log.warn("[CustomException] code={}, message={}", errorCode.getCode(), errorCode.getMessage());
+        log.warn("[CustomException] code={}, message={}", errorCode.getCode(), ex.getCustomMessage());
 
         return ResponseEntity
                 .status(errorCode.getStatus())
-                .body(ApiResponse.error(errorCode));
+                .body(ApiResponse.error(errorCode, ex.getCustomMessage()));
     }
 
     /**
@@ -71,7 +78,6 @@ public class GlobalResponseHandler implements ResponseBodyAdvice<Object> {
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiResponse<Object>> handleException(Exception ex) {
         ErrorCode errorCode = ErrorCode.ETC_520_001;
-
         log.error("[UnhandledException] message={}", ex.getMessage(), ex);
 
         return ResponseEntity
